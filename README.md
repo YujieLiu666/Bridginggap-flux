@@ -1,6 +1,6 @@
 👋 The workshop was successfully held in August 2025. https://fluxnet.org/bridging-the-gap-flux-data-meets-land-surface-models-a-successful-workshop/ 
 
-This repo contains tutorials for flux data gap-filling and partitioning, FLUXNET data product exploration, and comparison of observed tower data with ELM outputs.
+This repo contains tutorials for flux data gap-filling and partitioning (REddyProc), FLUXNET data product exploration, and comparison of observed tower data with ELM outputs.
 Authors: Yujie Liu, Roel Ruzol, Sreenath Paleri, Md Shamsuzzaman, Bailey Murphy
 
 ### 🔗 What is Binder?
