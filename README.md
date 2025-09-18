@@ -1,5 +1,6 @@
-👋 Welcome to the Bridging the Gap: Flux Data Meets Land Surface Models - Flux tutorials!
+👋 The workshop was successfully held in August 2025. https://fluxnet.org/bridging-the-gap-flux-data-meets-land-surface-models-a-successful-workshop/ 
 
+# Flux tutorials
 Authors: Yujie Liu, Roel Ruzol, Sreenath Paleri, Md Shamsuzzaman, Bailey Murphy
 
 ### 🔗 What is Binder?
