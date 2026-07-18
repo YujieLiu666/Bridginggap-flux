@@ -1,0 +1,1079 @@
+---
+title: "flux-model-comparison"
+output: html_document
+date: "2025-08-08"
+---
+
+# OBJECTIVES
+-In this tutorial, we will compare the tower FLUXNET tower data with the ELM output. There are 10 overlapping variables that we can compare between the two data sets. Check the "Crosswalk table" for these variables. 
+  
+-There are 4 parts to this tutorial. Parts 1 to 3 will create time-series graphs for comparing environmental variables, energy exchange variables, and carbon flux variables. In Part 4, we use a simple tool to discern the level of agreement between flux tower data and ELM output. 
+  
+
+  
+# IMPORTANT NOTES
+- This script needs access to Gmail to download the data from Google drive
+
+- In each part, there is a "USER INPUT" section where you should change the variables to compare, units, conversion factors (refer to the crosswalk variable table), years of data, and graph title accordingly
+
+-This tutorial is also used for comparing the adjusted and default simulations to flux tower data 
+  
+  
+  
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(lubridate)
+library(data.table)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library (rlang)
+library(ncdf4) # to read nc data
+library(RColorBrewer)
+library (purrr)
+
+my_theme <- theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 12),
+    # panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = "white"),
+    plot.background = element_rect(fill = "white", color = "white")
+  )
+```
+
+#USER INPUT SECTION
+-change site name and URLs according to your study site
+```{r}
+# change to the ID of your study site here
+site_name <- "US_ARM" 
+
+# flux tower directory here (FLUXNET_SUBSET_DD file)
+flux_file <- "C:/Users/ruzol/Downloads/fluxnet/AMF_US-ARM_FLUXNET_SUBSET_DD_2003-2023_4-6.csv"
+
+# default ELM output directory here
+elm_file <- "C:/Users/ruzol/Downloads/fluxnet/ELM_output_US_ARM.nc"
+
+# second ELM output directory here
+elm_v2_file <- "C:/Users/ruzol/Downloads/fluxnet/US_ARM_model_v2.nc"
+  
+#starting year of flux tower data
+start_year <- 2000
+  
+# Selected variables from ELM output to be compared with flux measurement
+vars_to_extract <- c(
+  "NEE",          # Net ecosystem exchange of carbon
+  "GPP",          # Gross primary production
+  "ER",           # Ecosystem respiration
+  "TSOI_10CM",    # Soil temperature at 10 cm
+  "FSH",          # Sensible heat flux
+  "EFLX_LH_TOT",  # Total latent heat flux
+  "TSA",          # surface air temperature
+  "PBOT",         # atmospheric pressure
+  "RAIN",         # Precipitation
+  "FGR"           # Soil heat flux
+)
+
+
+
+```
+
+
+# Read data from Google drive 
+```{r}
+# READ FLUX DATA
+{
+  df.flux <- fread(flux_file)
+  # covert -9999 to NA
+  df.flux <- df.flux %>%
+    mutate(across(everything(), ~na_if(. , -9999)))
+  df.flux <- df.flux %>% # add more time variables
+    mutate(
+      TIMESTAMP = ymd(TIMESTAMP),
+      year = year(TIMESTAMP),
+      month = month(TIMESTAMP),
+      date = as.Date(TIMESTAMP),
+      doy = yday(TIMESTAMP)
+    )
+}
+
+# READ DEFAULT ELM OUTPUT
+{
+  nc <- nc_open(elm_file) # Open the NetCDF file
+  
+  # Extract time (mcdate)
+  mcdate <- ncvar_get(nc, "mcdate")
+  data_list <- lapply(vars_to_extract, function(var) ncvar_get(nc, var))
+  
+  # Combine into data frame
+  df.model <- data.frame(mcdate = mcdate)
+  for (i in seq_along(vars_to_extract)) {
+    df.model[[vars_to_extract[i]]] <- data_list[[i]]
+  }
+  
+  # Close NetCDF file
+  nc_close(nc)
+  
+  # modify time variables
+  df.model <- df.model %>%
+    mutate(
+      mcdate = ymd(mcdate),
+      year = year(mcdate),
+      month = month(mcdate),
+      date = as.Date(mcdate),
+      doy = yday(mcdate)
+    ) %>%
+    rename(TIMESTAMP = mcdate)
+}
+
+# READ ADJUSTED ELM OUTPUT
+{
+  nc_adj <- nc_open(elm_v2_file) # Open the NetCDF file
+  
+  
+  # Extract time (mcdate)
+  mcdate <- ncvar_get(nc_adj, "mcdate")
+  data_list <- lapply(vars_to_extract, function(var) ncvar_get(nc_adj, var))
+  
+  # Combine into data frame
+  df.model_adj <- data.frame(mcdate = mcdate)
+  for (i in seq_along(vars_to_extract)) {
+    df.model_adj[[vars_to_extract[i]]] <- data_list[[i]]
+  }
+  
+  # Close NetCDF file
+  nc_close(nc_adj)
+  
+  # modify time variables
+  df.model_adj <- df.model_adj %>%
+    mutate(
+      mcdate = ymd(mcdate),
+      year = year(mcdate),
+      month = month(mcdate),
+      date = as.Date(mcdate),
+      doy = yday(mcdate)
+    ) %>%
+    rename(TIMESTAMP = mcdate)
+}
+
+# combine flux data and model output
+df.model = df.model[df.model$year >= start_year, ] # please change to the start year of flux measurement for you study site
+df.model_adj = df.model_adj[df.model_adj$year >= start_year, ] # please change to the start year of flux measurement for you study site
+df.model_adj <- df.model_adj %>%
+  rename_with(~ paste0(., "_v2"), .cols = -TIMESTAMP)
+df.combined <- df.model %>%
+  left_join(df.flux, by = "TIMESTAMP") %>%
+  left_join(df.model_adj, by = "TIMESTAMP")
+names(df.combined)
+
+
+```
+
+
+#PART 1: Comparison of environmental variables  between flux tower and ELM data
+
+- The example here is currently set for comparing air temperature
+- Use the crosswalk table for the variable names, units, and conversion factors 
+
+```{r}
+# ===== USER INPUT SECTION ====================================================
+flux_var <- "TA_F"     # Flux variable name
+model_var <- "TSA"     # Model variable name
+model_v2_var <- "TSA_v2" #Variable name from the adjusted model
+convert_model_units <- function(x) x -273.15  # Set equation if needed
+
+selected_years <- list(2000:2015) #change years to plot; it can handle several batches (ex: list(2001:2005, 2010:20015))
+
+compare_name <- "Air Temperature"   # variable being compared
+flux_label <- expression(AirTemp[flux]~(degC)) #change label name and units as needed
+model_label <- expression(AirTemp[model]~(degC)) #change label name and units as needed
+model_v2_label <- expression(AirTemp[model_v2]~(degC)) #change label name and units as needed
+plot_title <- "Air Temp Comparison" #change plot title as needed
+time_series_label <- expression(AirTemp~(degC)) # change label name and units as needed
+
+
+# =============================================================================
+
+year_range <- unlist(selected_years)
+
+# ==== Derived comparison columns ====
+flux_col <- paste0(compare_name, "_flux")
+model_col <- paste0(compare_name, "_model")
+model_v2_col <- paste0(compare_name, "_model_v2")
+
+qc_col <- paste0(flux_var, "_QC")  # dynamically get QC column name
+
+# Check if QC column is all NA
+if (all(is.na(df.combined[[qc_col]]))) {
+  # No QC filtering
+  df.combined_new <- df.combined %>%
+    mutate(
+      !!flux_col := .data[[flux_var]],
+      !!model_col := convert_model_units(.data[[model_var]]),
+      !!model_v2_col := convert_model_units(.data[[model_v2_var]])
+    ) %>%
+    filter(year.x %in% year_range)
+} else {
+  # Apply QC filtering
+  df.combined_new <- df.combined %>%
+    filter(!is.na(.data[[qc_col]])) %>%   # remove NA QC
+    mutate(
+      !!flux_col := .data[[flux_var]],
+      !!model_col := convert_model_units(.data[[model_var]]),
+      !!model_v2_col := convert_model_units(.data[[model_v2_var]])
+    ) %>%
+    filter(year.x %in% year_range)
+}
+
+# ==== Dynamic axis limits ====
+all_x_vals <- df.combined_new[[flux_col]]
+all_y_vals <- c(df.combined_new[[model_col]], df.combined_new[[model_v2_col]])
+x_limits <- c(floor(min(all_x_vals, na.rm = TRUE)), ceiling(max(all_x_vals, na.rm = TRUE)))
+y_limits <- c(floor(min(all_y_vals, na.rm = TRUE)), ceiling(max(all_y_vals, na.rm = TRUE)))
+
+# ==== SCATTER PLOTS ====
+# Model v1 vs Flux
+p1 <- ggscatter(
+  data = df.combined_new,
+  x = flux_col,
+  y = model_col,
+  color = "steelblue",
+  add = "reg.line",
+  add.params = list(color = "black", size = 1),
+  conf.int = TRUE,
+  cor.coef = TRUE,
+  cor.coeff.args = list(size = 6),
+  label.x = x_limits[1],
+  label.y = y_limits[2],
+  title = paste(plot_title, "- Model v1"),
+  ggtheme = theme_pubr()
+) +
+  stat_regline_equation(
+    aes(label = ..eq.label..),
+    label.x = x_limits[1],
+    label.y = y_limits[1],
+    size = 6
+  ) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed", size = 1) +
+  xlim(x_limits) + ylim(y_limits) +
+  xlab(flux_label) + ylab(model_label) +
+  my_theme
+
+# Model v2 vs Flux
+p2 <- ggscatter(
+  data = df.combined_new,
+  x = flux_col,
+  y = model_v2_col,
+  color = "darkgreen",
+  add = "reg.line",
+  add.params = list(color = "black", size = 1),
+  conf.int = TRUE,
+  cor.coef = TRUE,
+  cor.coeff.args = list(size = 6),
+  label.x = x_limits[1],
+  label.y = y_limits[2],
+  title = paste(plot_title, "- Model v2"),
+  ggtheme = theme_pubr()
+) +
+  stat_regline_equation(
+    aes(label = ..eq.label..),
+    label.x = x_limits[1],
+    label.y = y_limits[1],
+    size = 6
+  ) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed", size = 1) +
+  xlim(x_limits) + ylim(y_limits) +
+  xlab(flux_label) + ylab(model_v2_label) +
+  my_theme
+
+print(p1)
+print(p2)
+
+# ==== TIME SERIES PLOT ====
+df_long <- df.combined_new %>%
+  pivot_longer(
+    cols = all_of(c(flux_col, model_col, model_v2_col)),
+    names_to = "source",
+    values_to = compare_name
+  ) %>%
+  filter(year.x %in% year_range)
+
+y_limits <- c(floor(min(df_long[[compare_name]], na.rm = TRUE)),
+              ceiling(max(df_long[[compare_name]], na.rm = TRUE)))
+
+all_years <- sort(unique(df_long$year.x))
+for (i in seq(1, length(all_years), by = 4)) {
+  years_to_plot <- all_years[i:min(i+3, length(all_years))]
+  df_subset <- df_long %>% filter(year.x %in% years_to_plot)
+
+  p <- ggplot(df_subset, aes(x = doy.x, y = .data[[compare_name]], color = source)) +
+    geom_point(alpha = 0.3, size = 0.7) +
+    geom_smooth(se = FALSE, method = "loess", span = 0.2) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    facet_wrap(~ year.x, ncol = 2) +
+    xlab("DOY") +
+    ylab(time_series_label) +
+    scale_color_manual(
+      values = setNames(c("red", "blue", "darkgreen"), 
+                        c(flux_col, model_col, model_v2_col)),
+      labels = c("Flux Tower", "Model v1", "Model v2")
+    ) +
+    ylim(y_limits) +
+    labs(title = paste0(compare_name, " Comparison")) +
+    my_theme
+
+  print(p)
+}
+```
+
+
+# PART 2: Energy exchange variables comparison between flux tower and ELM data
+
+```{r}
+# ===== USER INPUT SECTION ====================================================
+flux_var <- "LE_F_MDS"     # Flux variable name
+model_var <- "EFLX_LH_TOT"     # Model variable name
+model_v2_var <- "EFLX_LH_TOT_v2" #Model v2 variable name
+convert_model_units <- function(x) x  # Set equation if needed
+
+selected_years <- list(2000:2015) #change years to plot; it can handle several batches (ex: list(2001:2005, 2010:20015))
+
+compare_name <- "Latent heat flux"   # variable being compared
+flux_label <- expression(LE[flux]~(W/m^2)) #change label name and units as needed
+model_label <- expression(LE[model]~(W/m^2)) #change label name and units as needed
+model_v2_label <- expression(LE[model_v2]~(W/m^2)) #change label name and units as needed
+plot_title <- "Latent Heat Flux Comparison" #change plot title as needed
+time_series_label <- expression(LE_flux~(W/m^2)) # change label name and units as needed
+
+
+# =============================================================================
+
+year_range <- unlist(selected_years)
+
+# ==== Derived comparison columns ====
+flux_col <- paste0(compare_name, "_flux")
+model_col <- paste0(compare_name, "_model")
+model_v2_col <- paste0(compare_name, "_model_v2")
+
+qc_col <- paste0(flux_var, "_QC")  # dynamically get QC column name
+
+# Check if QC column is all NA
+if (all(is.na(df.combined[[qc_col]]))) {
+  # No QC filtering
+  df.combined_new <- df.combined %>%
+    mutate(
+      !!flux_col := .data[[flux_var]],
+      !!model_col := convert_model_units(.data[[model_var]]),
+      !!model_v2_col := convert_model_units(.data[[model_v2_var]])
+    ) %>%
+    filter(year.x %in% year_range)
+} else {
+  # Apply QC filtering
+  df.combined_new <- df.combined %>%
+    filter(!is.na(.data[[qc_col]])) %>%   # remove NA QC
+    mutate(
+      !!flux_col := .data[[flux_var]],
+      !!model_col := convert_model_units(.data[[model_var]]),
+      !!model_v2_col := convert_model_units(.data[[model_v2_var]])
+    ) %>%
+    filter(year.x %in% year_range)
+}
+
+
+# ==== Dynamic axis limits for scatter plots ====
+all_x_vals <- df.combined_new[[flux_col]]
+all_y_vals <- c(df.combined_new[[model_col]], df.combined_new[[model_v2_col]])
+x_limits <- c(floor(min(all_x_vals, na.rm = TRUE)), ceiling(max(all_x_vals, na.rm = TRUE)))
+y_limits <- c(floor(min(all_y_vals, na.rm = TRUE)), ceiling(max(all_y_vals, na.rm = TRUE)))
+
+# ==== SCATTER PLOTS ====
+# Model v1 vs Flux
+p1 <- ggscatter(
+  data = df.combined_new,
+  x = flux_col,
+  y = model_col,
+  color = "steelblue",
+  add = "reg.line",
+  add.params = list(color = "black", size = 1),
+  conf.int = TRUE,
+  cor.coef = TRUE,
+  cor.coeff.args = list(size = 6),
+  label.x = x_limits[1],
+  label.y = y_limits[2],
+  title = paste(plot_title, "- Model v1"),
+  ggtheme = theme_pubr()
+) +
+  stat_regline_equation(
+    aes(label = ..eq.label..),
+    label.x = x_limits[1],
+    label.y = y_limits[1],
+    size = 6
+  ) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed", size = 1) +
+  xlim(x_limits) + ylim(y_limits) +
+  xlab(flux_label) + ylab(model_label) +
+  my_theme
+
+# Model v2 vs Flux
+p2 <- ggscatter(
+  data = df.combined_new,
+  x = flux_col,
+  y = model_v2_col,
+  color = "orange",
+  add = "reg.line",
+  add.params = list(color = "black", size = 1),
+  conf.int = TRUE,
+  cor.coef = TRUE,
+  cor.coeff.args = list(size = 6),
+  label.x = x_limits[1],
+  label.y = y_limits[2],
+  title = paste(plot_title, "- Model v2"),
+  ggtheme = theme_pubr()
+) +
+  stat_regline_equation(
+    aes(label = ..eq.label..),
+    label.x = x_limits[1],
+    label.y = y_limits[1],
+    size = 6
+  ) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed", size = 1) +
+  xlim(x_limits) + ylim(y_limits) +
+  xlab(flux_label) + ylab(model_v2_label) +
+  my_theme
+
+print(p1)
+print(p2)
+
+# ==== TIME SERIES PLOT ====
+df_long <- df.combined_new %>%
+  pivot_longer(
+    cols = all_of(c(flux_col, model_col, model_v2_col)),
+    names_to = "source",
+    values_to = compare_name
+  ) %>%
+  filter(year.x %in% year_range)
+
+y_limits <- c(floor(min(df_long[[compare_name]], na.rm = TRUE)),
+              ceiling(max(df_long[[compare_name]], na.rm = TRUE)))
+
+all_years <- sort(unique(df_long$year.x))
+for (i in seq(1, length(all_years), by = 4)) {
+  years_to_plot <- all_years[i:min(i+3, length(all_years))]
+  df_subset <- df_long %>% filter(year.x %in% years_to_plot)
+
+  p <- ggplot(df_subset, aes(x = doy.x, y = .data[[compare_name]], color = source)) +
+    geom_point(alpha = 0.3, size = 0.7) +
+    geom_smooth(se = FALSE, method = "loess", span = 0.2) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    facet_wrap(~ year.x, ncol = 2) +
+    xlab("DOY") +
+    ylab(time_series_label) +
+    scale_color_manual(
+      values = setNames(c("red", "blue", "orange"), 
+                        c(flux_col, model_col, model_v2_col)),
+      labels = c("Flux Tower", "Model v1", "Model v2")
+    ) +
+    ylim(y_limits) +
+    labs(title = paste0(compare_name, " Comparison")) +
+    my_theme
+
+  print(p)
+}
+
+```
+
+
+
+# PART 3: Carbon Flux variables comparison between flux tower and ELM data
+
+```{r}
+# ===== USER INPUT SECTION ====================================================
+flux_var <- "NEE_VUT_REF"     # Flux variable name
+model_var <- "NEE"            # Model variable name
+model_v2_var <- "NEE_v2"      # Model v2 variable name
+
+convert_model_units <- function(x) x * 86400 # Set equation if needed
+
+selected_years <- list(2000:2015) # Change years to plot; can handle several batches
+
+compare_name <- "Net Ecosystem Exchange"   
+flux_label <- expression(NEE[flux]~(gC/m^2/day)) 
+model_label <- expression(NEE[model]~(gC/m^2/day)) 
+model_v2_label <- expression(NEE[model~v2]~(gC/m^2/day)) 
+plot_title <- "NEE Comparison" 
+time_series_label <- expression(NEE~(gC/m^2/day)) 
+
+# =============================================================================
+
+year_range <- unlist(selected_years)
+
+# ==== Derived comparison columns ====
+flux_col <- paste0(compare_name, "_flux")
+model_col <- paste0(compare_name, "_model")
+model_v2_col <- paste0(compare_name, "_model_v2")
+qc_col <- paste0(flux_var, "_QC")
+
+# ==== Conditional QC filtering ====
+if (qc_col %in% names(df.combined) && !all(is.na(df.combined[[qc_col]]))) {
+  df.combined <- df.combined %>% filter(!is.na(.data[[qc_col]]))
+}
+
+# ==== Create comparison dataframe ====
+df.combined_new <- df.combined %>%
+  mutate(
+    !!flux_col    := .data[[flux_var]],
+    !!model_col   := convert_model_units(.data[[model_var]]),
+    !!model_v2_col := convert_model_units(.data[[model_v2_var]])
+  ) %>%
+  filter(year.x %in% year_range)
+
+# ==== Dynamic axis limits for scatter plot ====
+x_vals <- df.combined_new[[flux_col]]
+y_vals_all <- c(df.combined_new[[model_col]], df.combined_new[[model_v2_col]])
+x_limits <- c(floor(min(x_vals, na.rm = TRUE)), ceiling(max(x_vals, na.rm = TRUE)))
+y_limits <- c(floor(min(y_vals_all, na.rm = TRUE)), ceiling(max(y_vals_all, na.rm = TRUE)))
+
+# ==== X-Y SCATTER PLOT ====
+#flux tower vs model output
+p1 <- ggscatter(
+  data = df.combined_new,
+  x = flux_col,
+  y = model_col,
+  color = "steelblue",
+  add = "reg.line",
+  add.params = list(color = "black", size = 1),
+  conf.int = TRUE,
+  cor.coef = TRUE,
+  cor.coeff.args = list(size = 6),
+  label.x = x_limits[1],
+  label.y = y_limits[2],
+  title = plot_title,
+  ggtheme = theme_pubr()
+) +
+  stat_regline_equation(
+    aes(label = ..eq.label..),
+    label.x = x_limits[1],
+    label.y = y_limits[1],
+    size = 6
+  ) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed", size = 1) +
+  xlim(x_limits) + ylim(y_limits) +
+  xlab(flux_label) + ylab(model_label) +
+  my_theme
+
+#flux tower vs model v2 output
+p2 <- ggscatter(
+  data = df.combined_new,
+  x = flux_col,
+  y = model_v2_col,
+  color = "darkgreen",
+  add = "reg.line",
+  add.params = list(color = "black", size = 1),
+  conf.int = TRUE,
+  cor.coef = TRUE,
+  cor.coeff.args = list(size = 6),
+  label.x = x_limits[1],
+  label.y = y_limits[2],
+  title = plot_title,
+  ggtheme = theme_pubr()
+) +
+  stat_regline_equation(
+    aes(label = ..eq.label..),
+    label.x = x_limits[1],
+    label.y = y_limits[1],
+    size = 6
+  ) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed", size = 1) +
+  xlim(x_limits) + ylim(y_limits) +
+  xlab(flux_label) + ylab(model_v2_label) +
+  my_theme
+
+print (p1)
+print (p2)
+
+# ==== TIME SERIES PLOT ====
+df_long <- df.combined_new %>%
+  pivot_longer(
+    cols = all_of(c(flux_col, model_col, model_v2_col)),
+    names_to = "source",
+    values_to = compare_name
+  )
+
+y_vals <- df.combined_new[[flux_col]]
+y_limits <- c(floor(min(y_vals, na.rm = TRUE)), ceiling(max(y_vals, na.rm = TRUE)))
+
+all_years <- sort(unique(df_long$year.x))
+for (i in seq(1, length(all_years), by = 4)) {
+  years_to_plot <- all_years[i:min(i+3, length(all_years))]
+  df_subset <- df_long %>% filter(year.x %in% years_to_plot)
+
+  p <- ggplot(df_subset, aes(x = doy.x, y = .data[[compare_name]], color = source)) +
+    geom_point(alpha = 0.3, size = 0.7) +
+    geom_smooth(se = FALSE, method = "loess", span = 0.2) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    facet_wrap(~ year.x, ncol = 2) +
+    xlab("DOY") +
+    ylab(time_series_label) +
+    scale_color_manual(
+      values = setNames(c("red", "blue", "darkgreen"), c(flux_col, model_col, model_v2_col)),
+      labels = c("Flux", "Model", "Model v2")
+    ) +
+    ylim(y_limits) +
+    labs(title = paste0(compare_name, " Comparison")) +
+    my_theme
+
+  print(p)
+}
+
+# ==== Cumulative Fluxes per year====
+df_cumsum <- df.combined_new %>%
+  select(TIMESTAMP, year.x, doy.x, all_of(c(flux_col, model_col, model_v2_col))) %>%
+  pivot_longer(
+    cols = all_of(c(flux_col, model_col, model_v2_col)),
+    names_to = "source",
+    values_to = "value"
+  ) %>%
+  group_by(year.x, source) %>%
+  arrange(doy.x, .by_group = TRUE) %>%
+  mutate(cumulative_value = cumsum(replace_na(value, 0))) %>%
+  ungroup()
+
+for (i in seq(1, length(all_years), by = 4)) {
+  years_to_plot <- all_years[i:min(i+3, length(all_years))]
+  df_subset <- df_cumsum %>% filter(year.x %in% years_to_plot)
+
+  p_cumsum <- ggplot(df_subset, aes(x = doy.x, y = cumulative_value, color = source)) +
+    geom_line(size = 1) +
+    facet_wrap(~ year.x, ncol = 2) +
+    xlab("DOY") +
+    ylab(expression(gC/m^2)) +
+    scale_color_manual(
+      values = setNames(c("red", "blue", "darkgreen"), c(flux_col, model_col, model_v2_col)),
+      labels = c("Flux Tower", "Model", "Model v2")
+    ) +
+    labs(title = paste0("Cumulative ", compare_name, " Comparison")) +
+    my_theme
+
+  print(p_cumsum)
+}
+
+# ==== Cumulative Fluxes for all years continuously ====
+df_cumsum_all <- df.combined_new %>%
+  select(TIMESTAMP, year.x, doy.x, all_of(c(flux_col, model_col, model_v2_col))) %>%
+  pivot_longer(
+    cols = all_of(c(flux_col, model_col, model_v2_col)),
+    names_to = "source",
+    values_to = "value"
+  ) %>%
+  arrange(TIMESTAMP) %>%      # order by full timestamp (chronological)
+  group_by(source) %>%
+  mutate(cumulative_value = cumsum(replace_na(value, 0))) %>%
+  ungroup()
+
+df_cumsum_all <- df_cumsum_all %>%
+    mutate(TIMESTAMP = as.POSIXct(TIMESTAMP, format = "%Y-%m-%d"))
+
+# Plot cumulative fluxes continuously for all years
+p_cumsum_all <- ggplot(df_cumsum_all, aes(x = TIMESTAMP, y = cumulative_value, color = source, group=source)) +
+  geom_line(size = 1) +
+  xlab("Time") +
+  ylab(expression(gC/m^2)) +
+  scale_color_manual(
+    values = setNames(c("red", "blue", "darkgreen"), c(flux_col, model_col, model_v2_col)),
+    labels = c("Flux Tower", "Model", "Model v2")
+  ) +
+  labs(title = paste0("Cumulative ", compare_name, " Across Years")) +
+  my_theme
+
+print(p_cumsum_all)
+
+
+```
+
+
+
+# PART 4: Evaluating level of agreement
+NOTE: this is a simplified approach that evaluates model-data agreement assuming model and flux tower data are from a single point, per year, and over the entire period that data is available for both. This means that there aren't spatial components to the evaluation. 
+```{r}
+# ===== USER INPUT SECTION ====================================================
+nee_flux <- "NEE_VUT_REF"    
+nee_model <- "NEE"    
+gpp_flux <- "GPP_NT_VUT_REF"
+gpp_model <- "GPP" 
+reco_flux <- "RECO_NT_VUT_REF"
+reco_model <- "ER" 
+nee_model_v2 <- "NEE_v2"
+gpp_model_v2 <- "GPP_v2"
+reco_model_v2 <- "ER_v2"
+
+selected_years <- list(1996:2015) #change years to plot; it can handle several batches (ex: list(2001:2005, 2010:20015))
+# =============================================================================
+
+year_range <- unlist(selected_years)
+
+
+df.combined_eval <- df.combined %>%
+  filter(!is.na(NEE_VUT_REF_QC)) %>%
+  mutate(
+    NEE_flux = .data[[nee_flux]],
+    NEE_model = .data[[nee_model]] * 86400,
+    NEE_model_v2 = .data[[nee_model_v2]] * 86400,
+
+    GPP_flux = .data[[gpp_flux]],
+    GPP_model = .data[[gpp_model]] * 86400,
+    GPP_model_v2 = .data[[gpp_model_v2]] * 86400,
+
+    Reco_flux = .data[[reco_flux]],
+    Reco_model = .data[[reco_model]] * 86400,
+    Reco_model_v2 = .data[[reco_model_v2]] * 86400
+  ) %>%
+  filter(year.x %in% year_range)
+
+
+variables_compare <- c(
+  "year.x", "month.x", "date.x", "doy.x", "TIMESTAMP",
+  "NEE_flux", "NEE_model", "NEE_model_v2",
+  "GPP_flux", "GPP_model", "GPP_model_v2",
+  "Reco_flux", "Reco_model", "Reco_model_v2"
+)
+
+setDT(df.combined_eval)
+df.combined_sub <- df.combined_eval[, ..variables_compare]
+
+# Replace negative tower GPP values with NA
+df.combined_sub$GPP_flux[df.combined_sub$GPP_flux < 0] <- NA
+
+df.combined_sub <- df.combined_sub %>%
+  pivot_longer(
+    cols = c(
+      NEE_flux, NEE_model, NEE_model_v2,
+      GPP_flux, GPP_model, GPP_model_v2,
+      Reco_flux, Reco_model, Reco_model_v2
+    ),
+    names_to = "variable",
+    values_to = "value"
+  )
+
+df.combined_sub <- df.combined_sub %>%
+  mutate(
+    data_type = case_when(
+      grepl("_flux$", variable) ~ "Tower",
+      grepl("_model_v2$", variable) ~ "Model_v2",
+      grepl("_model$", variable) ~ "Model",
+      TRUE ~ NA_character_
+    ),
+    flux_type = case_when(
+      grepl("^NEE", variable) ~ "NEE",
+      grepl("^GPP", variable) ~ "GPP",
+      grepl("^Reco", variable) ~ "Reco",
+      TRUE ~ NA_character_
+    )
+  )
+
+df.combined_sub$site_name <- site_name
+
+## filter data
+
+ #filtering out dates where there isn't tower data available for comparison
+# Identify dates where Tower data is missing for each flux_type
+missing_dates <- df.combined_sub %>%
+  filter(data_type == "Tower") %>%
+  filter(is.na(value)) %>%
+  select(date.x, flux_type)
+
+# Remove all rows for those dates and flux_type combos
+df.combined_sub <- df.combined_sub %>%
+  anti_join(missing_dates, by = c("date.x", "flux_type"))
+
+## compute interannual and overall metrics, then plot it
+
+# Variables to evaluate
+variable_list <- c("GPP", "NEE", "Reco")
+
+all_metrics <- list()  # Initialize list to store results
+
+for (variable_run in variable_list) {
+  for (year_val in year_range) {
+
+    obs <- subset(df.combined_sub, data_type == "Tower" & flux_type == variable_run & year.x == year_val)
+    model <- subset(df.combined_sub, data_type == "Model" & flux_type == variable_run & year.x == year_val)
+    model_v2 <- subset(df.combined_sub, data_type == "Model_v2" & flux_type == variable_run & year.x == year_val)
+
+    # Skip if missing obs
+    if (nrow(obs) == 0 || all(is.na(obs$value))) next
+
+    # -------- Evaluate Model vs Tower --------
+    if (nrow(model) > 0 && !all(is.na(model$value))) {
+      norm_sd <- sd(model$value, na.rm = TRUE) / sd(obs$value, na.rm = TRUE)
+      S_corr <- (1 + cor(model$value, obs$value, use = "complete.obs", method = "pearson")) / 2
+      bias <- model$value - obs$value
+      rmse <- sqrt(mean((model$value - obs$value)^2, na.rm = TRUE))
+      e_bias <- ifelse(abs(obs$value) > 0, abs(model$value - obs$value) / abs(obs$value), NA)
+      S_bias <- exp(-1 * e_bias)
+      S_bias[!is.finite(S_bias)] <- NA
+      domain_S_bias <- mean(S_bias, na.rm = TRUE)
+      model_anom <- model$value - mean(model$value, na.rm = TRUE)
+      obs_anom <- obs$value - mean(obs$value, na.rm = TRUE)
+      crmse <- sqrt(mean((model_anom - obs_anom)^2, na.rm = TRUE))
+      crms <- sqrt(mean(obs_anom^2, na.rm = TRUE))
+      e_rmse <- crmse / crms
+      S_rmse <- exp(-1 * e_rmse)
+      S <- (domain_S_bias + 2 * S_rmse + S_corr) / 4
+
+      if (!is.na(S)) {
+        metric <- c("tower mean", "tower SD", "model mean", "model SD", "SD norm.", "bias", "RMSE",
+                    "correlation score", "bias score", "RMSE score", "overall score")
+        model_scores <- c(mean(obs$value, na.rm = TRUE), sd(obs$value, na.rm = TRUE),
+                          mean(model$value, na.rm = TRUE), sd(model$value, na.rm = TRUE),
+                          norm_sd, mean(bias, na.rm = TRUE), rmse,
+                          S_corr, domain_S_bias, S_rmse, S)
+
+        score_df <- data.frame(
+          site = site_name,
+          year = year_val,
+          variable = variable_run,
+          metric = metric,
+          value = model_scores,
+          model_version = "Model"
+        )
+
+        all_metrics[[paste0(variable_run, "_", year_val, "_Model")]] <- score_df
+      }
+    }
+
+    # -------- Evaluate Model_v2 vs Tower --------
+    if (nrow(model_v2) > 0 && !all(is.na(model_v2$value))) {
+      norm_sd <- sd(model_v2$value, na.rm = TRUE) / sd(obs$value, na.rm = TRUE)
+      S_corr <- (1 + cor(model_v2$value, obs$value, use = "complete.obs", method = "pearson")) / 2
+      bias <- model_v2$value - obs$value
+      rmse <- sqrt(mean((model_v2$value - obs$value)^2, na.rm = TRUE))
+      e_bias <- ifelse(abs(obs$value) > 0, abs(model_v2$value - obs$value) / abs(obs$value), NA)
+      S_bias <- exp(-1 * e_bias)
+      S_bias[!is.finite(S_bias)] <- NA
+      domain_S_bias <- mean(S_bias, na.rm = TRUE)
+      model_anom <- model_v2$value - mean(model_v2$value, na.rm = TRUE)
+      obs_anom <- obs$value - mean(obs$value, na.rm = TRUE)
+      crmse <- sqrt(mean((model_anom - obs_anom)^2, na.rm = TRUE))
+      crms <- sqrt(mean(obs_anom^2, na.rm = TRUE))
+      e_rmse <- crmse / crms
+      S_rmse <- exp(-1 * e_rmse)
+      S <- (domain_S_bias + 2 * S_rmse + S_corr) / 4
+
+      if (!is.na(S)) {
+        metric <- c("tower mean", "tower SD", "model mean", "model SD", "SD norm.", "bias", "RMSE",
+                    "correlation score", "bias score", "RMSE score", "overall score")
+        model_scores <- c(mean(obs$value, na.rm = TRUE), sd(obs$value, na.rm = TRUE),
+                          mean(model_v2$value, na.rm = TRUE), sd(model_v2$value, na.rm = TRUE),
+                          norm_sd, mean(bias, na.rm = TRUE), rmse,
+                          S_corr, domain_S_bias, S_rmse, S)
+
+        score_df <- data.frame(
+          site = site_name,
+          year = year_val,
+          variable = variable_run,
+          metric = metric,
+          value = model_scores,
+          model_version = "Model_v2"
+        )
+
+        all_metrics[[paste0(variable_run, "_", year_val, "_Model_v2")]] <- score_df
+      }
+    }
+  }
+}
+
+
+# Combine results from loop and create interannual metric table
+metric_df <- do.call(rbind, all_metrics)
+row.names(metric_df) <- NULL
+
+print(metric_df) #check out the results!
+
+# Calculate overall metric from yearly results, now including model_version
+metric_summary <- metric_df %>%
+  group_by(site, variable, metric, model_version) %>%
+  summarise(
+    value = mean(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# plot interannual metrics (including model_version)
+metric_df_sub <- subset(metric_df, metric %in% c("bias score", "correlation score", 
+                                                 "RMSE score", "overall score"))
+
+metric_df_sub$metric <- factor(metric_df_sub$metric, 
+                               levels = c("bias score", "correlation score", 
+                                          "RMSE score", "overall score"))
+
+# Plot overall metric (including model_version)
+scores <- c("bias score", "correlation score", "RMSE score", "overall score")
+
+metric_summary_sub <- subset(metric_summary, metric %in% scores)
+
+# Order metrics nicely
+metric_summary_sub$metric <- factor(
+  metric_summary_sub$metric,
+  levels = c("bias score", "correlation score", "RMSE score", "overall score")
+)
+
+# List of variables to plot separately
+variables_to_plot <- c("GPP", "NEE", "Reco")
+
+# Plot interannual metrics separately for each variable
+walk(variables_to_plot, function(var_name) {
+  metric_df_sub_var <- metric_df_sub %>% filter(variable == var_name)
+  
+  p <- ggplot(metric_df_sub_var, aes(x = metric, y = factor(year), fill = value)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = sprintf("%.2f", value)), size = 3) +
+    scale_fill_gradientn(colors = brewer.pal(n = 10, name = "Spectral"), limits = c(0, 1)) +
+    facet_wrap(~ model_version, scales = "free") +  # facet by model version only
+    my_theme +
+    labs(title = paste0("Flux vs Model Evaluation per Year - ", var_name),
+         x = NULL, y = "Year") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(p)
+})
+
+# Plot overall metrics across all years
+ggplot(metric_summary_sub, aes(x = metric, y = site, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", value)), size = 5, angle = 90) +
+  scale_fill_gradientn(colors = brewer.pal(n = 10, name = "Spectral"), limits = c(0, 1), name = "Score") +
+  facet_grid(variable ~ model_version, scales = "free") +  # facet by variable (rows) and model_version (columns)
+  my_theme +
+  labs(title = "Flux vs Model Evaluation Across All Years",
+       x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+
+#plot_save <- "model_scoring_GPP_NEE.png"
+#ggsave(filename = plot_save, dpi = 500)
+
+```
+
+
+
+
+
+# Optional: evaluate flux vs model per month (across years); are there months when the model and flux tower agree more?
+```{r}
+# Variables to evaluate
+variable_list <- c("GPP", "NEE", "Reco")
+all_monthly_metrics <- list()  # to store results
+
+months_to_evaluate <- sort(unique(df.combined_sub$month.x))
+
+for (variable_run in variable_list) {
+  for (month_val in months_to_evaluate) {
+    
+    # Subset observation data (Tower)
+    obs <- subset(df.combined_sub, data_type == "Tower" & flux_type == variable_run & month.x == month_val)
+
+    # Skip if obs missing
+    if (nrow(obs) == 0 || all(is.na(obs$value))) next
+
+    # Subset model and model_v2 data
+    model    <- subset(df.combined_sub, data_type == "Model"    & flux_type == variable_run & month.x == month_val)
+    model_v2 <- subset(df.combined_sub, data_type == "Model_v2" & flux_type == variable_run & month.x == month_val)
+    
+    # ---- Function to calculate metrics ----
+    calc_metrics <- function(model_data, obs_data, site_name, variable_run, month_val, model_version_label) {
+      if (nrow(model_data) == 0 || all(is.na(model_data$value))) return(NULL)
+      
+      norm_sd <- sd(model_data$value, na.rm = TRUE) / sd(obs_data$value, na.rm = TRUE)
+      S_corr  <- (1 + cor(model_data$value, obs_data$value, use = "complete.obs", method = "pearson")) / 2
+      bias    <- model_data$value - obs_data$value
+      rmse    <- sqrt(mean((model_data$value - obs_data$value)^2, na.rm = TRUE))
+      
+      e_bias  <- ifelse(abs(obs_data$value) > 0, abs(model_data$value - obs_data$value) / abs(obs_data$value), NA)
+      S_bias  <- exp(-1 * e_bias)
+      S_bias[!is.finite(S_bias)] <- NA
+      domain_S_bias <- mean(S_bias, na.rm = TRUE)
+      
+      model_anom <- model_data$value - mean(model_data$value, na.rm = TRUE)
+      obs_anom   <- obs_data$value   - mean(obs_data$value, na.rm = TRUE)
+      crmse      <- sqrt(mean((model_anom - obs_anom)^2, na.rm = TRUE))
+      crms       <- sqrt(mean(obs_anom^2, na.rm = TRUE))
+      e_rmse     <- crmse / crms
+      S_rmse     <- exp(-1 * e_rmse)
+      
+      S <- (domain_S_bias + 2 * S_rmse + S_corr) / 4
+      
+      metric <- c("tower mean", "tower SD", "model mean", "model SD", "SD norm.", "bias", "RMSE",
+                  "correlation score", "bias score", "RMSE score", "overall score")
+      
+      model_scores <- c(
+        mean(obs_data$value, na.rm = TRUE), sd(obs_data$value, na.rm = TRUE),
+        mean(model_data$value, na.rm = TRUE), sd(model_data$value, na.rm = TRUE),
+        norm_sd, mean(bias, na.rm = TRUE), rmse,
+        S_corr, domain_S_bias, S_rmse, S
+      )
+      
+      data.frame(site = site_name, month = month_val, variable = variable_run,
+                 metric = metric, value = model_scores, model_version = model_version_label)
+    }
+    
+    # Calculate metrics for Model
+    res_model <- calc_metrics(model, obs, site_name, variable_run, month_val, "Model")
+    # Calculate metrics for Model_v2
+    res_model_v2 <- calc_metrics(model_v2, obs, site_name, variable_run, month_val, "Model_v2")
+    
+    # Append results to list if not NULL
+    if (!is.null(res_model)) all_monthly_metrics[[paste0(variable_run, "_", month_val, "_Model")]] <- res_model
+    if (!is.null(res_model_v2)) all_monthly_metrics[[paste0(variable_run, "_", month_val, "_Model_v2")]] <- res_model_v2
+  }
+}
+
+# Combine into final table
+monthly_metric_df <- do.call(rbind, all_monthly_metrics)
+row.names(monthly_metric_df) <- NULL
+
+# Subset to plot only key scoring metrics
+scores <- c("bias score", "correlation score", "RMSE score", "overall score")
+
+monthly_metric_plot_df <- subset(monthly_metric_df, metric %in% scores)
+
+# Order metrics
+monthly_metric_plot_df$metric <- factor(
+  monthly_metric_plot_df$metric,
+  levels = c("bias score", "correlation score", "RMSE score", "overall score")
+)
+
+# Add month name labels if needed
+monthly_metric_plot_df$month <- factor(monthly_metric_plot_df$month, 
+                                       levels = 1:12, 
+                                       labels = month.abb)
+
+# Plot monthly metrics across all years
+variables_to_plot <- c("GPP", "NEE", "Reco")
+
+walk(variables_to_plot, function(var_name) {
+  df_plot <- monthly_metric_plot_df %>% filter(variable == var_name)
+  
+  p <- ggplot(df_plot, aes(x = metric, y = month, fill = value)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = sprintf("%.2f", value)), size = 4) +
+    scale_fill_gradientn(colors = brewer.pal(10, "Spectral"), limits = c(0, 1), name = "Score") +
+    facet_wrap(~ model_version, scales = "free") +
+    scale_y_discrete(limits = rev(levels(df_plot$month))) +  # Reverse month order: Jan on top
+    my_theme +
+    labs(title = paste0("Model Performance by Month Across Years - ", var_name),
+         x = NULL, y = NULL) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(p)
+})
+
+
+
+
+```
+
+
